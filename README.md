@@ -1,2 +1,1 @@
-# dyro
-Dyro: Dynamic Rust Ownership Verification
+# Dyro: Dynamic Rust Ownership Verification
