@@ -1,0 +1,11 @@
+#!/bin/sh
+
+GREEN="\e[32m"
+ENDCOLOR="\e[0m"
+
+echo "${GREEN}[pre-commit hook]${ENDCOLOR} cargo fmt --check"
+cargo fmt --check || (
+    exitcode=$?
+    echo "${GREEN}[pre-commit hook]${ENDCOLOR} cargo fmt --check failed, run cargo fmt to fix."
+    exit $exitcode
+)
