@@ -42,6 +42,15 @@ impl ASTToANFConverter {
         let body_backup = body.clone();
 
         let result = match value {
+            ast::ASTNode::Unit => {
+                let value = anf::ANFSimpleExpression::Unit;
+                Ok(anf::ANFNode::Let {
+                    binding,
+                    value,
+                    body: Box::new(body),
+                })
+            }
+
             ast::ASTNode::Let {
                 binding: let_binding,
                 value: let_value,
@@ -78,7 +87,7 @@ impl ASTToANFConverter {
                 let mut fn_body_context = context.clone();
                 fn_body_context.insert(fn_name.clone(), fn_var);
 
-                let mut fn_value_context = context.clone();
+                let mut fn_value_context = fn_body_context.clone();
                 let fn_anf_args = fn_args
                     .iter()
                     .map(|(arg_name, arg_type)| {

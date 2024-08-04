@@ -252,3 +252,236 @@ fn if_side_effect_test() {
         interpreter::Value::Int(1),
     );
 }
+
+#[test]
+fn recursion_test() {
+    // let pow2 x = if x == 0 then 1 else 2 * pow2 (x - 1) in pow2 3
+    integration_test_success(
+        dyro_poc::ast!(LetFn {
+            name: "pow2".into(),
+            args: vec![("x".into(), T::Int)],
+            return_type: T::Int,
+            value: Box::new(If {
+                condition: Box::new(BinaryOp {
+                    op: Eq,
+                    left: Box::new(Var("x".into())),
+                    right: Box::new(Int(0))
+                }),
+                then: Box::new(Int(1)),
+                r#else: Box::new(BinaryOp {
+                    op: Mul,
+                    left: Box::new(Int(2)),
+                    right: Box::new(Call {
+                        function: Box::new(Var("pow2".into())),
+                        type_arguments: vec![T::Int],
+                        arguments: vec![BinaryOp {
+                            op: Sub,
+                            left: Box::new(Var("x".into())),
+                            right: Box::new(Int(1))
+                        }]
+                    })
+                }),
+                r#type: T::Int,
+            }),
+            body: Box::new(Call {
+                function: Box::new(Var("pow2".into())),
+                type_arguments: vec![],
+                arguments: vec![Int(3)]
+            })
+        }),
+        interpreter::Value::Int(8),
+    );
+}
+
+#[test]
+fn copy_test() {
+    /*
+        let copy (newptr: *mut i32) (ptr: *mut i32) (len: i32) : Unit =
+            let for (i: i32) : Unit =
+                if i < len then
+                    newptr[i] = ptr[i];
+                    for (i + 1)
+                else
+                    ()
+            in for 0
+        in
+        let x = alloc<int>(10) in
+        let y = alloc<int>(10) in
+        x[0] = 5;
+        x[1] = 10;
+        x[2] = 15;
+        x[3] = 20;
+        copy(y, x, 4);
+        y[2]
+    */
+    integration_test_success(
+        dyro_poc::ast!(LetFn {
+            name: "copy".into(),
+            args: vec![
+                ("newptr".into(), T::MutPtr(Box::new(T::Int))),
+                ("ptr".into(), T::MutPtr(Box::new(T::Int))),
+                ("len".into(), T::Int),
+            ],
+            return_type: T::Unit,
+            value: Box::new(LetFn {
+                name: "for".into(),
+                args: vec![("i".into(), T::Int)],
+                return_type: T::Unit,
+                value: Box::new(If {
+                    condition: Box::new(BinaryOp {
+                        op: Lt,
+                        left: Box::new(Var("i".into())),
+                        right: Box::new(Var("len".into())),
+                    }),
+                    then: Box::new(Sequence {
+                        first: Box::new(ArraySet {
+                            array: Box::new(Var("newptr".into())),
+                            index: Box::new(Var("i".into())),
+                            value: Box::new(ArrayRead {
+                                array: Box::new(Var("ptr".into())),
+                                index: Box::new(Var("i".into())),
+                            }),
+                        }),
+                        second: Box::new(Call {
+                            function: Box::new(Var("for".into())),
+                            type_arguments: vec![],
+                            arguments: vec![BinaryOp {
+                                op: Add,
+                                left: Box::new(Var("i".into())),
+                                right: Box::new(Int(1)),
+                            }],
+                        }),
+                    }),
+                    r#else: Box::new(Unit),
+                    r#type: T::Unit,
+                }),
+                body: Box::new(Call {
+                    function: Box::new(Var("for".into())),
+                    type_arguments: vec![],
+                    arguments: vec![Int(0)],
+                })
+            }),
+            body: Box::new(Let {
+                binding: "x".into(),
+                value: Box::new(Call {
+                    function: Box::new(SpecialFunction(crate::special::SpecialFunction::Alloc)),
+                    type_arguments: vec![T::Int],
+                    arguments: vec![Int(10)],
+                }),
+                body: Box::new(Let {
+                    binding: "y".into(),
+                    value: Box::new(Call {
+                        function: Box::new(SpecialFunction(crate::special::SpecialFunction::Alloc)),
+                        type_arguments: vec![T::Int],
+                        arguments: vec![Int(10)],
+                    }),
+                    body: Box::new(seq! {
+                        ArraySet { array: Box::new(Var("x".into())), index: Box::new(Int(0)), value: Box::new(Int(5)) };
+                        ArraySet { array: Box::new(Var("x".into())), index: Box::new(Int(1)), value: Box::new(Int(10)) };
+                        ArraySet { array: Box::new(Var("x".into())), index: Box::new(Int(2)), value: Box::new(Int(15)) };
+                        ArraySet { array: Box::new(Var("x".into())), index: Box::new(Int(3)), value: Box::new(Int(20)) };
+                        Call {
+                            function: Box::new(Var("copy".into())),
+                            type_arguments: vec![],
+                            arguments: vec![
+                                Var("y".into()),
+                                Var("x".into()),
+                                Int(4),
+                            ],
+                        };
+                        ArrayRead { array: Box::new(Var("y".into())), index: Box::new(Int(2)) }
+                    })
+                })
+            })
+        }),
+        interpreter::Value::Int(15),
+    );
+}
+
+#[test]
+fn dealloc_test() {
+    // let x = alloc<int>(10) in dealloc<int>(x, 10)
+    integration_test_success(
+        dyro_poc::ast!(Let {
+            binding: "x".into(),
+            value: Box::new(Call {
+                function: Box::new(SpecialFunction(crate::special::SpecialFunction::Alloc)),
+                type_arguments: vec![T::Int],
+                arguments: vec![Int(10)],
+            }),
+            body: Box::new(Call {
+                function: Box::new(SpecialFunction(crate::special::SpecialFunction::Dealloc)),
+                type_arguments: vec![T::Int],
+                arguments: vec![Var("x".into()), Int(10)],
+            }),
+        }),
+        interpreter::Value::Unit,
+    );
+}
+
+#[test]
+fn dealloc_wrong_size_test() {
+    // let x = alloc<int>(10) in dealloc<int>(x, 5)
+    integration_test_failure(
+        dyro_poc::ast!(Let {
+            binding: "x".into(),
+            value: Box::new(Call {
+                function: Box::new(SpecialFunction(crate::special::SpecialFunction::Alloc)),
+                type_arguments: vec![T::Int],
+                arguments: vec![Int(10)],
+            }),
+            body: Box::new(Call {
+                function: Box::new(SpecialFunction(crate::special::SpecialFunction::Dealloc)),
+                type_arguments: vec![T::Int],
+                arguments: vec![Var("x".into()), Int(5)],
+            }),
+        }),
+        "Invalid size",
+    );
+}
+
+#[test]
+fn dealloc_different_type_test() {
+    // let x = alloc<int>(10) in dealloc<bool>(x, 40)
+    integration_test_success(
+        dyro_poc::ast!(Let {
+            binding: "x".into(),
+            value: Box::new(Call {
+                function: Box::new(SpecialFunction(crate::special::SpecialFunction::Alloc)),
+                type_arguments: vec![T::Int],
+                arguments: vec![Int(10)],
+            }),
+            body: Box::new(Call {
+                function: Box::new(SpecialFunction(crate::special::SpecialFunction::Dealloc)),
+                type_arguments: vec![T::Bool],
+                arguments: vec![Var("x".into()), Int(40)],
+            }),
+        }),
+        interpreter::Value::Unit,
+    );
+}
+
+#[test]
+fn read_after_dealloc_test() {
+    // let x = alloc<int>(10) in (x[0] = 5; dealloc<int>(x, 10); x[0])
+    integration_test_failure(
+        dyro_poc::ast!(Let {
+            binding: "x".into(),
+            value: Box::new(Call {
+                function: Box::new(SpecialFunction(crate::special::SpecialFunction::Alloc)),
+                type_arguments: vec![T::Int],
+                arguments: vec![Int(10)],
+            }),
+            body: Box::new(seq! {
+                ArraySet { array: Box::new(Var("x".into())), index: Box::new(Int(0)), value: Box::new(Int(5)) };
+                Call {
+                    function: Box::new(SpecialFunction(crate::special::SpecialFunction::Dealloc)),
+                    type_arguments: vec![T::Int],
+                    arguments: vec![Var("x".into()), Int(10)],
+                };
+                ArrayRead { array: Box::new(Var("x".into())), index: Box::new(Int(0)) }
+            }),
+        }),
+        "Undefined",
+    );
+}

@@ -11,6 +11,7 @@ impl From<&str> for ASTVar {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ASTType {
+    Unit,
     Int,
     Bool,
     String,
@@ -52,6 +53,7 @@ pub enum ASTNode {
         value: Box<ASTNode>,
         body: Box<ASTNode>,
     },
+    Unit,
     Int(i32),
     Bool(bool),
     Var(ASTVar),

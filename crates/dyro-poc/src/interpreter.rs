@@ -1,6 +1,6 @@
 use crate::{
     anf::{self, ANFType},
-    ast::{self, ASTType},
+    ast::{self},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub enum PtrLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
+    Unit,
     Int(i32),
     String(String),
     Bool(bool),
@@ -19,6 +20,8 @@ pub enum Value {
     MutPtr {
         location: PtrLocation,
         r#type: anf::ANFType,
+        // Size in bytes (not length)
+        size: u32,
     },
     Function {
         args: Vec<(anf::ANFVar, anf::ANFType)>,
@@ -30,16 +33,27 @@ pub enum Value {
 impl Value {
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
+            Value::Unit => vec![0],
             Value::Int(i) => i.to_le_bytes().to_vec(),
             Value::Bool(b) => vec![*b as u8],
             Value::Tuple(elements) => elements.iter().flat_map(Value::to_bytes).collect(),
-            Value::MutPtr { location, .. } => match location {
-                PtrLocation::Stack(offset) => {
-                    [vec![1, 0, 0, 0], offset.to_le_bytes().to_vec()].concat()
-                }
-                PtrLocation::Heap(offset) => {
-                    [vec![2, 0, 0, 0], offset.to_le_bytes().to_vec()].concat()
-                }
+            Value::MutPtr {
+                location,
+                size,
+                r#type: _,
+            } => match location {
+                PtrLocation::Stack(offset) => [
+                    vec![1],
+                    size.to_le_bytes().to_vec(),
+                    offset.to_le_bytes().to_vec(),
+                ]
+                .concat(),
+                PtrLocation::Heap(offset) => [
+                    vec![2],
+                    size.to_le_bytes().to_vec(),
+                    offset.to_le_bytes().to_vec(),
+                ]
+                .concat(),
             },
             Value::SpecialFunction(_) => panic!("SpecialFunction cannot be converted to bytes"),
             Value::String(_) => panic!("String cannot be converted to bytes"),
@@ -51,6 +65,7 @@ impl Value {
         use ast::ASTType::*;
         let type_size = r#type.size();
         match (r#type.0, bytes.len()) {
+            (Unit, 1) => Ok(Value::Unit),
             (Int, 4) => Ok(Value::Int(i32::from_le_bytes([
                 bytes[0], bytes[1], bytes[2], bytes[3],
             ]))),
@@ -69,18 +84,20 @@ impl Value {
                 Ok(Value::Tuple(elements))
             }
             (MutPtr(t), 8) => {
-                let location = match [bytes[0], bytes[1], bytes[2], bytes[3]] {
-                    [1, 0, 0, 0] => PtrLocation::Stack(u32::from_le_bytes([
-                        bytes[4], bytes[5], bytes[6], bytes[7],
+                let location = match bytes[0] {
+                    1 => PtrLocation::Stack(u32::from_le_bytes([
+                        bytes[5], bytes[6], bytes[7], bytes[8],
                     ])),
-                    [2, 0, 0, 0] => PtrLocation::Heap(u32::from_le_bytes([
-                        bytes[4], bytes[5], bytes[6], bytes[7],
+                    2 => PtrLocation::Heap(u32::from_le_bytes([
+                        bytes[5], bytes[6], bytes[7], bytes[8],
                     ])),
                     _ => return Err(anyhow::anyhow!("Invalid location")),
                 };
+                let size = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
                 Ok(Value::MutPtr {
                     location,
                     r#type: anf::ANFType(*t),
+                    size,
                 })
             }
             (String | Function(_, _), _) => Err(anyhow::anyhow!("Invalid type for bytes")),
@@ -94,6 +111,7 @@ impl Value {
         use ast::ASTType::*;
 
         anf::ANFType(match self {
+            Value::Unit => Unit,
             Value::Int(_) => Int,
             Value::String(_) => String,
             Value::Bool(_) => Bool,
@@ -177,16 +195,16 @@ impl Interpreter {
         }
     }
 
-    pub fn write_heap(&mut self, offset: usize, byte: u8) -> anyhow::Result<()> {
+    pub fn write_heap(&mut self, offset: usize, value: HeapValue) -> anyhow::Result<()> {
         match &mut self.parent {
             RootOrParent::Root { heap } => {
                 while heap.len() <= offset {
                     heap.push(HeapValue::Undefined);
                 }
-                heap[offset] = HeapValue::Byte(byte);
+                heap[offset] = value;
                 Ok(())
             }
-            RootOrParent::Parent(parent) => parent.write_heap(offset, byte),
+            RootOrParent::Parent(parent) => parent.write_heap(offset, value),
         }
     }
 
@@ -275,12 +293,48 @@ impl Interpreter {
                 } else {
                     return Err(anyhow::anyhow!("Invalid argument for Alloc"));
                 };
-                let location = self.alloc(type_size * alloc_length);
+                let size = type_size * alloc_length;
+                let location = self.alloc(size);
 
                 Ok(Value::MutPtr {
                     location,
                     r#type: r#type.clone(),
+                    size: size.try_into().unwrap(),
                 })
+            }
+            (Dealloc, [r#type], [ptr, length]) => {
+                let type_size = r#type.size();
+                let length: usize = if let Value::Int(i) = self.eval_var(*length)? {
+                    i.try_into()
+                        .map_err(|_| anyhow::anyhow!("Invalid length"))?
+                } else {
+                    return Err(anyhow::anyhow!("Invalid argument for Dealloc"));
+                };
+                let ptr = self.eval_var(*ptr)?;
+                match ptr {
+                    Value::MutPtr {
+                        location,
+                        r#type: _,
+                        size,
+                    } => {
+                        let offset = match location {
+                            PtrLocation::Stack(_offset) => unimplemented!(),
+                            PtrLocation::Heap(offset) => offset as usize,
+                        };
+                        // TODO: confirm whether to check r#type == ptr_type
+                        anyhow::ensure!(
+                            length * type_size == size.try_into().unwrap(),
+                            "Invalid size for Dealloc"
+                        );
+                        for i in 0..length {
+                            for j in 0..type_size {
+                                self.write_heap(offset + i * type_size + j, HeapValue::Undefined)?;
+                            }
+                        }
+                        Ok(Value::Unit)
+                    }
+                    _ => Err(anyhow::anyhow!("Invalid argument for Dealloc")),
+                }
             }
             (Panic, [], [var]) => {
                 let message = self.eval_var(*var)?;
@@ -299,6 +353,7 @@ impl Interpreter {
         expr: &anf::ANFSimpleExpression,
     ) -> anyhow::Result<Value> {
         match expr {
+            anf::ANFSimpleExpression::Unit => Ok(Value::Unit),
             anf::ANFSimpleExpression::Int(i) => Ok(Value::Int(*i)),
             anf::ANFSimpleExpression::Bool(b) => Ok(Value::Bool(*b)),
             anf::ANFSimpleExpression::Var(v) => self.eval_var(*v),
@@ -402,14 +457,27 @@ impl Interpreter {
                 let index = self.eval_var(*index)?;
 
                 match (array, index) {
-                    (Value::MutPtr { location, r#type }, Value::Int(index)) => {
+                    (
+                        Value::MutPtr {
+                            location,
+                            r#type,
+                            size,
+                        },
+                        Value::Int(index),
+                    ) => {
                         let offset = match location {
                             PtrLocation::Stack(_offset) => unimplemented!(),
                             PtrLocation::Heap(offset) => offset as usize,
                         };
                         let type_size = r#type.size();
                         let bytes = (0..type_size)
-                            .map(|i| self.read_heap(offset + index as usize * type_size + i))
+                            .map(|i| {
+                                anyhow::ensure!(
+                                    index as usize * type_size + i < size.try_into().unwrap(),
+                                    "Index out of bounds"
+                                );
+                                self.read_heap(offset + index as usize * type_size + i)
+                            })
                             .collect::<anyhow::Result<Vec<u8>>>()?;
                         Value::from_bytes(bytes, r#type)
                     }
@@ -426,7 +494,15 @@ impl Interpreter {
                 let value = self.eval_var(*value)?;
 
                 match (array, index, value) {
-                    (Value::MutPtr { location, r#type }, Value::Int(index), value) => {
+                    (
+                        Value::MutPtr {
+                            location,
+                            r#type,
+                            size,
+                        },
+                        Value::Int(index),
+                        value,
+                    ) => {
                         let offset = match location {
                             PtrLocation::Stack(_offset) => unimplemented!(),
                             PtrLocation::Heap(offset) => offset as usize,
@@ -435,7 +511,14 @@ impl Interpreter {
                         let bytes = value.to_bytes();
                         anyhow::ensure!(bytes.len() == type_size, "Invalid size for ArraySet");
                         for (i, byte) in bytes.into_iter().enumerate() {
-                            self.write_heap(offset + index as usize * type_size + i, byte)?;
+                            anyhow::ensure!(
+                                index as usize * type_size + i < size.try_into().unwrap(),
+                                "Index out of bounds"
+                            );
+                            self.write_heap(
+                                offset + index as usize * type_size + i,
+                                HeapValue::Byte(byte),
+                            )?;
                         }
                         Ok(Value::Tuple(Vec::new()))
                     }

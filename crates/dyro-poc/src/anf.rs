@@ -13,12 +13,14 @@ impl ANFType {
         use ast::ASTType::*;
 
         match self.0 {
+            // Don't want to consider ZST now
+            Unit => 1,
             Int => 4,
             Bool => 1,
             Tuple(ref types) => types.iter().map(|t| ANFType(t.clone()).size()).sum(),
 
-            // Use 8 bytes to store heap/stack enum + address
-            MutPtr(_) => 8,
+            // [heap/stack enum, size, value]
+            MutPtr(_) => 9,
 
             // We probably can't store these types in memory so 0
             String => 0,
@@ -52,6 +54,7 @@ pub enum ANFNode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ANFSimpleExpression {
+    Unit,
     Int(i32),
     Bool(bool),
     Var(ANFVar),
