@@ -104,6 +104,41 @@ impl Value {
             _ => Err(anyhow::anyhow!("Invalid bytes")),
         }
     }
+
+    pub fn to_readable_string(&self) -> String {
+        match self {
+            Value::Unit => "()".to_string(),
+            Value::Int(i) => i.to_string(),
+            Value::String(s) => format!("{:?}", s),
+            Value::Bool(b) => b.to_string(),
+            Value::Tuple(elements) => format!(
+                "({})",
+                elements
+                    .iter()
+                    .map(Value::to_readable_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Value::MutPtr {
+                location,
+                r#type,
+                size,
+            } => format!("MutPtr({:?}, {:?}, {})", location, r#type, size),
+            Value::Function {
+                args,
+                return_type,
+                value: _,
+            } => format!(
+                "Function({:?}, {:?})",
+                args.iter()
+                    .map(|(var, r#type)| format!("{}: {:?}", var.0, r#type))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                return_type
+            ),
+            Value::SpecialFunction(special_function) => format!("{:?}", special_function),
+        }
+    }
 }
 
 impl Value {
@@ -335,6 +370,18 @@ impl Interpreter {
                     }
                     _ => Err(anyhow::anyhow!("Invalid argument for Dealloc")),
                 }
+            }
+            (Print, [r#type], [var]) => {
+                let value = self.eval_var(*var)?;
+                anyhow::ensure!(
+                    value.anf_type() == *r#type,
+                    "Invalid type for Print: type-parameter is {:?} but value is {:?}",
+                    r#type,
+                    value.anf_type(),
+                );
+
+                println!("{}", value.to_readable_string());
+                Ok(Value::Unit)
             }
             (Panic, [], [var]) => {
                 let message = self.eval_var(*var)?;

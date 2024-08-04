@@ -485,3 +485,29 @@ fn read_after_dealloc_test() {
         "Undefined",
     );
 }
+
+#[test]
+fn print_test() {
+    // print("hello")
+    integration_test_success(
+        dyro_poc::ast!(Call {
+            function: Box::new(SpecialFunction(crate::special::SpecialFunction::Print)),
+            type_arguments: vec![T::String],
+            arguments: vec![String("hello".into())],
+        }),
+        interpreter::Value::Unit,
+    );
+}
+
+#[test]
+fn print_bad_type_test() {
+    // print(1)
+    integration_test_failure(
+        dyro_poc::ast!(Call {
+            function: Box::new(SpecialFunction(crate::special::SpecialFunction::Print)),
+            type_arguments: vec![T::String],
+            arguments: vec![Int(1)],
+        }),
+        "Invalid type for Print",
+    );
+}
