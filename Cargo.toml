@@ -1,0 +1,11 @@
+[package]
+name = "dyro-mir-test"
+version = "0.1.0"
+authors = ["Southball <6523469+southball@users.noreply.github.com>"]
+edition = "2021"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[dependencies]
+clap = { version = "4.5.16", features = ["derive"] }
